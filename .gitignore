@@ -1,0 +1,12 @@
+.env*
+node_modules/
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+*.map
+*.tar
+*.tar.gz
+*.zip
+.DS_Store

@@ -1,0 +1,14 @@
+# Free-tier pilot only: NOT an always-on/verified end-to-end deployment.
+services:
+  - type: web
+    name: telegram-dot-callback
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    autoDeployTrigger: 'off'
+    envVars:
+      - key: CALLBACK_HMAC_KEY
+        sync: false
+      - key: MCP_CALLBACK_HOSTS
+        sync: false

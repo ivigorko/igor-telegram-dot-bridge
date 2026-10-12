@@ -1,0 +1,1 @@
+{"name":"telegram-dot-callback-only","version":"0.1.0","private":true,"type":"module","engines":{"node":">=24"},"scripts":{"start":"node callback-server.mjs","test":"node --test callback-server.test.mjs transport.test.mjs"}}
