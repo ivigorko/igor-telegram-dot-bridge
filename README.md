@@ -1,45 +1,49 @@
-# Callback-only Render service
+# Optional bearer-free relay callback transport
 
-A standalone HTTP callback forwarder for an existing backend. This repository does not contain a Telegram bot, Telegram ingestion, an MCP server, subscription storage, a scheduler, or automatic replies. Local tests are not proof of a deployed or end-to-end working integration.
+Local candidate only. No deployment, webhook activation, credentials, runtime environment changes or external network probes were performed.
 
-## Files and runtime
+This server forwards already-signed MCP callback requests to exact allowed public HTTPS destinations. It does not create event signatures, accept private service bearers, hold a Telegram bot token, poll Telegram, store content, schedule work or run keepalive traffic. The existing `/internal/callback` route remains compatible.
 
-Requires Node.js 24 or newer. Uses only built-in Node.js modules; no package installation or private source directory is required. The Docker image runs as the unprivileged `node` user. `render.yaml` describes a Docker web service with automatic deploys disabled.
+## Standalone package
 
-- `GET /healthz`: process liveness only.
-- `POST /internal/callback`: accepts an HMAC-authenticated JSON envelope containing `url`, `body` (a string), and `headers`.
-- Other routes, including query-string variants of these routes, are rejected.
+This directory includes the existing minimal `Dockerfile`, `package.json`, `render.yaml` and unchanged `prewarm.mjs` operator utility. It can be copied as an isolated service repository root. Do not publish the surrounding private core/relay source or use the monolith's startup script. The Docker image copies only the runtime server, security module, crypto module and package metadata; it runs as the unprivileged `node` user. The service never imports or invokes prewarm, and that utility is not in the Docker image.
 
-Only `webhook-id`, `webhook-timestamp`, `webhook-signature`, and `X-MCP-Subscription-Id` are forwarded, with a fixed JSON content type. The upstream backend must produce valid signed event or verification payloads. The forwarder authenticates the envelope; it does not validate the receiver's event-signing secret or complete a subscription lifecycle on its own.
+`npm start` starts `callback-server.mjs`. `render.yaml` keeps automatic deployment off and the optional relay route explicitly disabled. The relay-secret entry is commented out so a default deployment does not request an unused secret. After separately authorized provisioning, opt in with the exact flag and dedicated key described below. No credential values or callback hostnames are embedded.
 
-The callback must use HTTPS and an explicitly allowed DNS hostname. DNS results are checked for public addresses, and the connection is pinned to a validated address while preserving TLS hostname verification. Redirects are not followed. Request/response sizes, concurrency, and outbound duration are bounded. Responses to authenticated requests are signed and must be verified by the calling backend using the original request ID and response body.
+The existing bounded one-shot prewarm utility may be invoked explicitly by an operator immediately before an authorized subscription attempt. It only waits for process health at a verified Render origin; it is not a keepalive daemon and does not establish a valid MCP subscription. A real signed challenge remains required. This preparation does not establish unattended recovery or automatic subscription renewal.
 
-## Configuration
+## Exact environment contract
 
-Set these values through the hosting platform's secret/environment settings. Never commit live values to this repository, a YAML file, screenshots, or logs.
+- `CALLBACK_HMAC_KEY`: required canonical standard base64 encoding of exactly 32 bytes, shared only by private core and Render. Authorizes `/internal/callback` only.
+- `MCP_CALLBACK_HOSTS`: required comma-separated exact lowercase DNS hostnames. No wildcards, empty entries, IP literals or `.local` hosts. Both routes use this existing destination allowlist.
+- `PORT`: optional decimal listening port, 1–65535, default `10000`.
+- `RELAY_CALLBACK_ENABLED`: optional; the relay route exists only when its value is exactly the string `true`. Unset or any other value disables the route and returns ordinary 404 responses for it.
+- `RELAY_CALLBACK_HMAC_KEY`: required only when relay callback is enabled. Canonical standard base64 encoding of exactly 32 bytes, distinct from `CALLBACK_HMAC_KEY`; shared only by the public relay and Render. Authorizes `/internal/relay-callback` only. Ignored while the route is disabled. Existing core key remains mandatory when enabling relay support.
 
-- `CALLBACK_HMAC_KEY`: `<CANONICAL_BASE64_32_BYTE_SERVICE_KEY>`
-- `MCP_CALLBACK_HOSTS`: `<VERIFIED_CALLBACK_DNS_HOST>` or comma-separated verified exact DNS hosts
-- `PORT`: supplied by the hosting platform; defaults to `10000`
+No new credential is generated by this implementation. Key creation/provisioning remains an approval-gated launch step performed separately.
 
-Angle-bracket placeholders are documentation only and will not pass configuration validation. No working credentials are included. The service key must be dedicated to this callback connection and shared only with the calling backend. Do not configure Telegram tokens, owner identifiers, event-signing secrets, or unrelated application credentials here. The two required secrets/settings in `render.yaml` have no committed values (`sync: false`).
+Programmatic configuration from `loadConfig()` exposes `{key, hosts, port, relayEnabled, relayKey}`; `createCallbackServer()` also validates callers' configuration and requires boolean `relayEnabled: true` to register the relay route.
 
-Publish or deploy only the files in this standalone directory at the repository root. Do not copy a larger application, local environment files, old archives, private documentation, or source history into it. Review repository access and the hosting provider's data handling before deployment: the service receives callback URLs, signed headers, and event bodies in memory. This code does not log or persist payloads; hosting-platform logging and access controls require a separate review.
+## Signed protocol
 
-## Local checks and deployment
+Both routes accept POST JSON with `{ "url": "https://allowed-host/path", "body": "exact pre-signed MCP payload", "headers": { ... } }`. The exact outbound body string and the four upstream headers `webhook-id`, `webhook-timestamp`, `webhook-signature`, and `X-MCP-Subscription-Id` are forwarded unchanged. Each is required; extra headers including Authorization are dropped. Content-Type is set to application/json. The helper holds no MCP delivery secret and cannot verify or manufacture the upstream MCP signature; its authenticated upstream is responsible for signing.
 
-Run `npm test` to execute the tests. Run `npm start` with valid configuration to start the service; missing or malformed required configuration fails closed. Test fixtures are synthetic, including their deterministic test key; never reuse them in production. The manifest's free plan is a pilot configuration, not an uptime guarantee. Confirm current plan availability, pricing, and limits with the provider before deploying.
+The relay route alone restricts the forwarded body to either exact `{type:"verification",challenge:<UUID>}` or exact `{eventId:<bounded identifier>,name:"telegram.ingress.available",timestamp:<canonical UTC ISO timestamp>,data:{available:true,generation:<positive safe integer>},cursor:null}`. No message/identity fields, extra fields, additional nested data or other event names are accepted. The event identifier is 1–128 ASCII letters, digits, hyphens or underscores; timestamp uses `YYYY-MM-DDTHH:mm:ss.sssZ`; UUID challenge uses canonical lowercase UUID form with standard variant and version 1–8. The body must equal `JSON.stringify(JSON.parse(body))`, matching the relay emitter. This rejects duplicate keys, escaped keys, overwritten hidden content and noncanonical JSON whitespace without rewriting pre-signed bytes. Core callback body compatibility is unchanged.
 
-The optional one-shot command below waits at most two minutes for process health at a verified Render service origin. Replace the placeholder with the actual service origin:
+Internal request authentication is unchanged: HMAC-SHA256 over `route.id.timestamp.rawBody`, using the selected route's key. Header names are `x-bridge-id`, `x-bridge-timestamp` and `x-bridge-signature` (standard base64 MAC). Timestamp is ten-digit Unix seconds, with a maximum absolute clock skew of 300 seconds. The ID is nonempty and at most 128 characters. The relay must sign the exact route `/internal/relay-callback`; core signatures and keys never authorize it, and relay signatures and keys never authorize the core route. No fallback key exists.
 
-    node prewarm.mjs https://YOUR-SERVICE.onrender.com
+Authenticated replies, including replay, capacity, invalid-payload and transport errors, contain `x-bridge-response-signature`: HMAC-SHA256 over `response.id.rawResponseBody` using that same route's key and original request ID. Authentication failures, unsupported routes and pre-authentication framing failures are unsigned. Clients must verify signed responses before trusting their content.
 
-It is an explicit operator action, not a scheduled keepalive. A successful health check means the process is awake, not that callback verification or delivery succeeded. Perform a real signed subscription-verification exchange after warming the process.
+Success envelopes stay HTTP 200 with `{ "status": upstreamStatus, "body": upstreamResponseString }`. A callback HTTP 200 is only a transport result and cannot acknowledge or delete a relay queue record.
 
-## Delivery and security limits
+## Bounds and security
 
-Cold starts can exceed the calling backend's request timeout. The calling system needs its own durable queue/retry behavior and stable event IDs; receivers must deduplicate events because a transport timeout does not prove non-delivery. This forwarder cannot recover abandoned deliveries or renew subscriptions autonomously.
+- Shared outbound concurrency: 16 across both routes, not 16 per route.
+- Replay caches: separate route namespaces, at most 10,000 IDs per route, retained for 610 seconds after acceptance to cover future-dated requests. Replay or a full cache returns signed 409; saturation returns signed 503. Each retry after a signed failure needs a fresh transport request ID while retaining its durable operation/event identity upstream.
+- Replay caches are in memory and are lost on process restart or across independent instances. An intercepted still-valid request can be accepted again after restart. This server is not a durable exactly-once boundary. Private core and relay must persist their own protocol request nonce/operation fences, durable queue/import/ACK state, and stable event IDs; callback consumers must deduplicate delivery IDs. These upstream protections do not turn the helper's in-memory replay cache into durable replay prevention.
+- Limits retained: 16 KiB incoming headers, 512 KiB incoming envelope, 262,144-byte outbound payload and upstream response, 8,192-character URL, 2,048-character required header values, 15-second callback transport deadline, existing HTTP server timeouts.
+- `security.mjs` is unchanged: exact HTTPS host allowlist, no credentials/fragments/non-443 ports/IP literals, all DNS answers checked for public addresses, one validated address pinned per connection, original hostname and TLS SNI retained, no redirects or proxy environment use.
 
-The transport replay cache is bounded and in memory, retained for 610 seconds. It does not survive restarts or span instances. A previously captured signed request may therefore re-deliver its original event after a restart within the timestamp window. Use a shared replay store if cross-restart transport replay prevention is required, and durable receiver-side event deduplication in all cases.
+## Local verification
 
-Before relying on the service, validate the Docker build and hosting manifest, real DNS/TLS delivery, rejection of invalid signatures, synchronous challenge echo, response signatures, timeouts, duplicate delivery, cold starts, restart behavior, and the complete calling application's lifecycle. Local tests mock outbound transport and do not establish these live properties. No deployment or publication is performed by this package.
+Run `npm test` (equivalent to `node --test callback-server.test.mjs relay-callback.test.mjs transport.test.mjs`) from this directory. All 32 tests are self-contained within this package. Tests use local loopback HTTP fixtures and mocked HTTPS/DNS; they do not probe a deployment. The inherited explicit-prewarm test uses the unchanged local operator utility. Docker image build, Render-native Blueprint validation, real DNS/TLS, cold start and live signed MCP challenge have not been performed for this candidate.

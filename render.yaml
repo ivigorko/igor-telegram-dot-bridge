@@ -12,3 +12,10 @@ services:
         sync: false
       - key: MCP_CALLBACK_HOSTS
         sync: false
+      - key: RELAY_CALLBACK_ENABLED
+        value: 'false'
+      # Optional, only after relay opt-in and separate key provisioning approval.
+      # Set RELAY_CALLBACK_ENABLED to 'true' and add the distinct relay key.
+      # Kept commented so the default-disabled deployment needs no relay secret.
+      # - key: RELAY_CALLBACK_HMAC_KEY
+      #   sync: false
